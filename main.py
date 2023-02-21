@@ -4,8 +4,10 @@
 import os
 
 import numpy as np
-import scipy
+from scipy.io import loadmat
+from sklearn.mixture import GaussianMixture
 from matplotlib.ticker import ScalarFormatter
+from matplotlib.patches import Ellipse
 from matplotlib import pyplot as plt
 
 
@@ -49,6 +51,18 @@ def distances_mahalanobis_squared(points, clusters_mean, clusters_covar_inv):
     return np_clusters_points_mahalanobis_squared.T
 
 
+def plot_confidence_ellipses(axes, mean, covar):
+    lambda_, v = np.linalg.eig(covar)
+    lambda_ = np.sqrt(lambda_)
+    for j in range(1, 4):
+        ell = Ellipse(
+            xy=(mean.flatten()[0], mean.flatten()[1]),
+            width=lambda_[0] * j * 2, height=lambda_[1] * j * 2,
+            angle=np.rad2deg(np.arccos(v[0, 0])))
+        ell.set_facecolor('none')
+        axes.add_artist(ell)
+
+
 class KMeans:
 
     def __init__(self, n_clusters):
@@ -87,7 +101,6 @@ class KMeans:
 
     def _fit_step_euclidian(self):
         np_distances = distances_euclidian_squared(self.np_data, self.np_centroids)
-
         self.np_cluster_indices = np.argmin(np_distances, axis=1)
         if self.center_method == "centroid":
             fn_center = np.mean
@@ -95,7 +108,7 @@ class KMeans:
             fn_center = np.median
         np_centroids_old = self.np_centroids
         self.np_centroids = np.array([
-            fn_center(self.np_data[self.np_cluster_indices == i, :],axis=0)
+            fn_center(self.np_data[self.np_cluster_indices == i, :], axis=0)
             for i
             in range(self.n_clusters)])
         self.np_centroids_history.append(self.np_centroids)
@@ -126,12 +139,8 @@ class KMeans:
 
 def main(filepath_spikes, dir_output):
 
-    # =========================================================================
-    # PCA FROM LAB 5
-    # =========================================================================
-
     # unpack data
-    dict_spikes = scipy.io.loadmat(filepath_spikes)
+    dict_spikes = loadmat(filepath_spikes)
     np_spikes = dict_spikes["spikes"]
 
     # normalize spikes
@@ -142,19 +151,15 @@ def main(filepath_spikes, dir_output):
     # PCA
     n_dims_original = np_spikes_normalized.shape[1]
     np_unitary, np_singular_values, np_row_eigenvectors = np.linalg.svd(np_spikes_normalized, full_matrices=False)
-    np_eigenvalues = np.square(np_singular_values) / (n_dims_original - 1)
-    np_col_pcs = np_unitary @ np.diag(np_singular_values)
-
-    # =========================================================================
-    # PART 1: K-MEANS CLUSTERING
-    # =========================================================================
+    # np_eigenvalues = np.square(np_singular_values) / (n_dims_original - 1)
+    np_col_pcs_full = np_unitary @ np.diag(np_singular_values)
 
     # keep only first two principal components
-    np_col_pcs = np_col_pcs[:, :2]
+    np_col_pcs_first2 = np_col_pcs_full[:, :2]
 
     # plot first two principal components and determine number of clusters
     fig, axes = plt.subplots(1, 1, sharex="all", sharey="all")
-    axes.scatter(np_col_pcs[:, 0][::3], np_col_pcs[:, 1][::3], marker=".", alpha=0.1)
+    axes.scatter(np_col_pcs_first2[:, 0][::3], np_col_pcs_first2[:, 1][::3], marker=".", alpha=0.1)
     axes.set_xlabel("First principal component")
     axes.set_ylabel("Second principal component")
     axes.set_title("First and second spike principal components")
@@ -164,64 +169,68 @@ def main(filepath_spikes, dir_output):
     # visual inspection indicates there are three clusters
     n_clusters = 3
 
-    # perform k-means
+    # perform clustering
+    clustering_results = {}
     k_means = KMeans(n_clusters=n_clusters)
-    np_cluster_indices = k_means.fit(np_col_pcs, center_method="centroid", distance_method="euclidian")
-    fig, axes = plt.subplots(1, 1, sharex="all", sharey="all")
-    axes.scatter(np_col_pcs[:, 0][::3], np_col_pcs[:, 1][::3], c=np_cluster_indices[::3], marker=".", alpha=0.1)
-    np_centroid_history = np.array(k_means.np_centroids_history)
-    for cluster_idx in range(n_clusters):
-        axes.plot(np_centroid_history[:, cluster_idx, 0], np_centroid_history[:, cluster_idx, 1], color="black")
-    axes.scatter(k_means.np_centroids[:, 0], k_means.np_centroids[:, 1], color="black")
-    axes.set_xlabel("First principal component")
-    axes.set_ylabel("Second principal component")
-    axes.set_title("k-means")
-    plt.savefig(os.path.join(dir_output, "k means.png"))
-    plt.close()
-
-    # =========================================================================
-    # PART 2.1: K-MEDOIDS CLUSTERING
-    # =========================================================================
-
-    # perform k-medoids
-    k_means = KMeans(n_clusters=n_clusters)
-    np_cluster_indices = k_means.fit(np_col_pcs, center_method="medoid", distance_method="euclidian")
-    fig, axes = plt.subplots(1, 1, sharex="all", sharey="all")
-    axes.scatter(np_col_pcs[:, 0][::3], np_col_pcs[:, 1][::3], c=np_cluster_indices[::3], marker=".", alpha=0.1)
-    np_centroid_history = np.array(k_means.np_centroids_history)
-    for cluster_idx in range(n_clusters):
-        axes.plot(np_centroid_history[:, cluster_idx, 0], np_centroid_history[:, cluster_idx, 1], color="black")
-    axes.scatter(k_means.np_centroids[:, 0], k_means.np_centroids[:, 1], color="black")
-    axes.set_xlabel("First principal component")
-    axes.set_ylabel("Second principal component")
-    axes.set_title("k-medoids")
-    plt.savefig(os.path.join(dir_output, "k medoids.png"))
-    plt.close()
-
-    # =========================================================================
-    # PART 2.2: K-MEANS WITH MAHALANOBIS CLUSTERING
-    # =========================================================================
-
-    # perform k-medoids
-    k_means = KMeans(n_clusters=n_clusters)
-    np_cluster_indices = k_means.fit(
-        np_col_pcs,
+    clustering_results["k-means"] = k_means.fit(np_col_pcs_first2, center_method="centroid", distance_method="euclidian")
+    clustering_results["k-medoids"] = k_means.fit(np_col_pcs_first2, center_method="medoid", distance_method="euclidian")
+    clustering_results["k-means mahal"] = k_means.fit(
+        np_col_pcs_first2,
         center_method="centroid", distance_method="mahalanobis",
         convergence_threshold=0.00001)
+    gmm = GaussianMixture(n_components=n_clusters)
+    clustering_results["gmm"] = gmm.fit_predict(np_col_pcs_first2)
+
+    # plotting scatterplots
+    for name, np_cluster_indices in clustering_results.items():
+        fig, axes = plt.subplots(1, 1, sharex="all", sharey="all")
+        for cluster_idx, color_name in enumerate(("tab:blue", "tab:orange", "tab:green")):
+            np_pcs_in_cluster = np_col_pcs_first2[np_cluster_indices == cluster_idx]
+            axes.scatter(
+                np_pcs_in_cluster[:, 0], np_pcs_in_cluster[:, 1],
+                c=color_name, marker=".")
+        axes.set_xlabel("First principal component")
+        axes.set_ylabel("Second principal component")
+        axes.set_title(name)
+        plt.savefig(os.path.join(dir_output, f"{name}.png"))
+        plt.close()
+
+    # computing average spikes
+    for name, np_cluster_indices in clustering_results.items():
+        fig, axes = plt.subplots(1, 1, sharex="all", sharey="all")
+        for cluster_idx in range(n_clusters):
+            np_spikes_in_cluster = np_spikes[np_cluster_indices == cluster_idx]
+            np_spikes_in_cluster_mean = np.mean(np_spikes_in_cluster, axis=0)
+            np_spikes_in_cluster_std = np.std(np_spikes_in_cluster, axis=0)
+            axes.fill_between(
+                range(len(np_spikes_in_cluster_mean)),
+                np_spikes_in_cluster_mean - np_spikes_in_cluster_std,
+                np_spikes_in_cluster_mean + np_spikes_in_cluster_std,
+                alpha=0.1)
+            axes.plot(np_spikes_in_cluster_mean, label=cluster_idx)
+        axes.legend()
+        axes.set_title(name + "spikes")
+        plt.savefig(os.path.join(dir_output, f"{name} spikes.png"))
+        plt.close()
+
+    # plot gmm gradients
     fig, axes = plt.subplots(1, 1, sharex="all", sharey="all")
-    axes.scatter(np_col_pcs[:, 0][::3], np_col_pcs[:, 1][::3], c=np_cluster_indices[::3], marker=".", alpha=0.1)
-    np_centroid_history = np.array(k_means.np_centroids_history)
+    for cluster_idx, color_name in enumerate(("tab:blue", "tab:orange", "tab:green")):
+        np_pcs_in_cluster = np_col_pcs_first2[clustering_results["gmm"] == cluster_idx]
+        # axes.scatter(
+        #     np_pcs_in_cluster[:, 0], np_pcs_in_cluster[:, 1],
+        #     c=color_name, marker=".")
     for cluster_idx in range(n_clusters):
-        axes.plot(np_centroid_history[:, cluster_idx, 0], np_centroid_history[:, cluster_idx, 1], color="black")
-    axes.scatter(k_means.np_centroids[:, 0], k_means.np_centroids[:, 1], color="black")
+        plot_confidence_ellipses(axes, gmm.means_[cluster_idx], gmm.covariances_[cluster_idx])
     axes.set_xlabel("First principal component")
     axes.set_ylabel("Second principal component")
-    axes.set_title("k-means with mahalobis")
-    plt.savefig(os.path.join(dir_output, "mahalobis.png"))
+    axes.set_title("gmm contours")
+    plt.savefig(os.path.join(dir_output, f"gmm contours.png"))
     plt.close()
+
 
 
 if __name__ == "__main__":
-    _filepath_spikes = r"D:\Documents\Academics\BME517\bme_lab_6\data\spikes.mat"
-    _dir_output = r"D:\Documents\Academics\BME517\bme_lab_5_6_report"
+    _filepath_spikes = r"C:\Users\Morgan\Documents\Academics\BME517\bme_lab_6\data\spikes.mat"
+    _dir_output = r"C:\Users\Morgan\Documents\Academics\BME517\bme_lab_5_6_report"
     main(_filepath_spikes, _dir_output)
